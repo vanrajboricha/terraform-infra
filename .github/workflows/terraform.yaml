@@ -26,15 +26,15 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      changed_dirs: ${{ steps.changes.outputs.dirs }}
-      deleted_dirs: ${{ steps.changes.outputs.deleted }}
+      matrix_config: ${{ steps.build-matrix.outputs.matrix }}
+      has_changes: ${{ steps.build-matrix.outputs.has_changes }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Pull full history to parse diff states accurately
+          fetch-depth: 0
 
-      - name: Detect changed and deleted Terraform directories
-        id: changes
+      - name: Build Dynamic Matrix Configuration
+        id: build-matrix
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             BASE=${{ github.event.pull_request.base.sha }}
@@ -44,39 +44,43 @@ jobs:
             HEAD="HEAD"
           fi
 
-          # 1. Capture Created or Modified files/directories
-          CHANGED=$(git diff --name-only --diff-filter=AM $BASE $HEAD | grep "\.tf$" | xargs -I{} dirname {} | sort -u | jq -R -s -c 'split("\n")[:-1]')
-          
-          # 2. Capture Deleted files/directories explicitly
-          DELETED=$(git diff --name-only --diff-filter=D $BASE $HEAD | grep "main\.tf$" | xargs -I{} dirname {} | sort -u | jq -R -s -c 'split("\n")[:-1]')
-          
-          # Fallbacks for safety
-          if [ -z "$CHANGED" ] || [ "$CHANGED" == "[]" ]; then CHANGED="[]"; fi
-          if [ -z "$DELETED" ] || [ "$DELETED" == "[]" ]; then DELETED="[]"; fi
+          echo "Evaluating changes between $BASE and $HEAD..."
 
-          echo "dirs=$CHANGED" >> $GITHUB_OUTPUT
-          echo "deleted=$DELETED" >> $GITHUB_OUTPUT
+          # Capture modified/added and deleted directories safely
+          CHANGED_LIST=$(git diff --name-only --diff-filter=AM $BASE $HEAD | grep "\.tf$" | xargs -I{} dirname {} | sort -u | grep -v '^\.$' || true)
+          DELETED_LIST=$(git diff --name-only --diff-filter=D $BASE $HEAD | grep "main\.tf$" | xargs -I{} dirname {} | sort -u | grep -v '^\.$' || true)
+
+          # Build a clean JSON configuration array dynamically using jq
+          MATRIX_JSON=$(jq -n \
+            --arg changed "$CHANGED_LIST" \
+            --arg deleted "$DELETED_LIST" \
+            '
+            [ ($changed | split("\n") | .[] | select(length > 0) | {type: "update", directory: .}),
+              ($deleted | split("\n") | .[] | select(length > 0) | {type: "destroy", directory: .}) ]
+            ')
+
+          # Determine if we actually have anything to process
+          COUNT=$(echo "$MATRIX_JSON" | jq 'length')
           
-          echo "Active Changed dirs: $CHANGED"
-          echo "Detected Deleted dirs: $DELETED"
+          if [ "$COUNT" -eq "0" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "matrix=[]" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Generated Infrastructure Matrix: $MATRIX_JSON"
 
   plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
     needs: detect-changes
-    if: github.event_name == 'pull_request' && (needs.detect-changes.outputs.changed_dirs != '[]' || needs.detect-changes.outputs.deleted_dirs != '[]')
-    
-    # We create a composite matrix strategy to handle both modifications and removals safely
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.has_changes == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Inject updates map
-          - type: update
-            directory: ${{ fromJson(needs.detect-changes.outputs.changed_dirs) }}
-          # Inject deletions map
-          - type: destroy
-            directory: ${{ fromJson(needs.detect-changes.outputs.deleted_dirs) }}
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix_config) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,15 +99,19 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ap-south-1
 
-      # CRUCIAL STEP: Reconstruct files in a temp directory if the type is "destroy"
       - name: Reconstruct Workspace if Deleted
         run: |
+          # Robust defensive safety gate
+          if [ -z "${{ matrix.directory }}" ] || [ "${{ matrix.directory }}" == "Array" ]; then
+            echo "Invalid matrix element reference detected. Exiting safely."
+            exit 0
+          fi
+
           if [ "${{ matrix.type }}" == "destroy" ]; then
             echo "Infrastructure directory is flagged for removal. Building isolated environment..."
             TEMP_WS="/tmp/tf-matrix-workspace"
             rm -rf $TEMP_WS && mkdir -p $TEMP_WS
             
-            # Pull file snapshots from the base merge-target branch tracking
             git show HEAD~1:${{ matrix.directory }}/main.tf > $TEMP_WS/main.tf
             git show HEAD~1:${{ matrix.directory }}/variables.tf > $TEMP_WS/variables.tf 2>/dev/null || true
             git show HEAD~1:${{ matrix.directory }}/terraform.tfvars > $TEMP_WS/terraform.tfvars 2>/dev/null || true
@@ -121,7 +129,6 @@ jobs:
         id: plan
         working-directory: ${{ env.TARGET_PATH }}
         run: |
-          # If it's a deletion, plan a complete destruction run
           if [ "${{ matrix.type }}" == "destroy" ]; then
             terraform plan -destroy -no-color -out=tfplan 2>&1 | tee plan_output.txt
           else
@@ -159,16 +166,11 @@ jobs:
     name: Terraform Apply
     runs-on: ubuntu-latest
     needs: detect-changes
-    # Triggers on standard push to main when updates OR drops are recorded
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && (needs.detect-changes.outputs.changed_dirs != '[]' || needs.detect-changes.outputs.deleted_dirs != '[]')
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.detect-changes.outputs.has_changes == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - type: update
-            directory: ${{ fromJson(needs.detect-changes.outputs.changed_dirs) }}
-          - type: destroy
-            directory: ${{ fromJson(needs.detect-changes.outputs.deleted_dirs) }}
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix_config) }}
     environment:
       name: dev
 
@@ -189,9 +191,13 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ap-south-1
 
-      # Workspace reconstruction block for execution runtime stability
       - name: Reconstruct Target Workspace Context
         run: |
+          if [ -z "${{ matrix.directory }}" ] || [ "${{ matrix.directory }}" == "Array" ]; then
+            echo "Invalid matrix element reference detected. Exiting safely."
+            exit 0
+          fi
+
           if [ "${{ matrix.type }}" == "destroy" ]; then
             TEMP_WS="/tmp/tf-apply-destroy-workspace"
             rm -rf $TEMP_WS && mkdir -p $TEMP_WS
@@ -222,38 +228,3 @@ jobs:
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           fi
         working-directory: ${{ env.TARGET_PATH }}
-
-  destroy:
-    name: Manual Emergency Destroy
-    runs-on: ubuntu-latest
-    # Corrected layout syntax to pass matrix dependency checking pipelines cleanly
-    needs: detect-changes
-    if: github.event.inputs.action == 'destroy'
-    environment:
-      name: dev-destroy
-    strategy:
-      matrix:
-        directory: ${{ fromJson(needs.detect-changes.outputs.changed_dirs) }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.12.2"
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ap-south-1
-
-      - name: Terraform Init
-        working-directory: ${{ matrix.directory }}
-        run: terraform init
-
-      - name: Terraform Destroy
-        working-directory: ${{ matrix.directory }}
-        run: terraform destroy -auto-approve
