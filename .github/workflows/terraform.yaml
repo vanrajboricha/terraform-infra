@@ -50,8 +50,8 @@ jobs:
           CHANGED_LIST=$(git diff --name-only --diff-filter=AM $BASE $HEAD | grep "\.tf$" | xargs -I{} dirname {} | sort -u | grep -v '^\.$' || true)
           DELETED_LIST=$(git diff --name-only --diff-filter=D $BASE $HEAD | grep "main\.tf$" | xargs -I{} dirname {} | sort -u | grep -v '^\.$' || true)
 
-          # Build a clean JSON configuration array dynamically using jq
-          MATRIX_JSON=$(jq -n \
+          # Build a compressed JSON configuration array dynamically using jq (-c)
+          MATRIX_JSON=$(jq -n -c \
             --arg changed "$CHANGED_LIST" \
             --arg deleted "$DELETED_LIST" \
             '
@@ -67,7 +67,11 @@ jobs:
             echo "matrix=[]" >> $GITHUB_OUTPUT
           else
             echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+            
+            # --- FIX: Multiline EOF Delimiter prevents formatting syntax breaks ---
+            echo "matrix<<EOF" >> $GITHUB_OUTPUT
+            echo "$MATRIX_JSON" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
           fi
 
           echo "Generated Infrastructure Matrix: $MATRIX_JSON"
