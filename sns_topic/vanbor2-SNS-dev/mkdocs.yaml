@@ -1,0 +1,12 @@
+site_name: 'vanbor2-SNS'
+site_description: 'Main documentation for the vanbor2-SNS'
+repo_url: https://github.com/vanrajboricha/vanbor2-SNS
+edit_uri: edit/main/docs
+
+plugins:
+  - techdocs-core
+
+# For sidebar navigation on https://backstage.io/, see `microsite/sidebars.json`
+nav:
+  - Overview:
+      - Getting started: 'docs/index.md'
