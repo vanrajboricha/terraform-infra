@@ -1,0 +1,30 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: vanraj723-s3-bucket
+  description: Creating S3 Bucket for Testing purpose
+  annotations:
+    github.com/project-slug: vanraj-boricha/terraform-infra
+    backstage.io/techdocs-ref: dir:.
+    backstage.io/managed-by-location: "url:https://github.com/vanrajboricha/terraform-infra/blob/main/s3_bucket/vanraj723-s3-bucket-dev/catalog-info.yaml"
+    terraform/resource-type:   "s3_bucket"
+    terraform/environment:     "dev"
+    terraform/aws-region:      "ap-south-1"
+    terraform/state-path:      "dev/vanraj723-s3-bucket/terraform.tfstate"
+    terraform/state-bucket:    "tfstate-vanbor-s3-ap-south-1-t4hb"
+    sonarqube.org/project-key: vanraj-boricha_terraform-infra
+
+  links:
+    - title: GitHub Folder
+      url: https://github.com/vanrajboricha/terraform-infra/tree/main/s3_bucket/vanraj723-s3-bucket-dev
+      icon: github
+    - title: GitHub Actions
+      url: https://github.com/vanrajboricha/terraform-infra/actions
+      icon: dashboard
+    - title: AWS Console
+      url: https://console.aws.amazon.com/
+      icon: cloud
+spec:
+  type: service
+  owner: development
+  lifecycle: experimental

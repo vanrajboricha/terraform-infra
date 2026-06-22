@@ -1,0 +1,12 @@
+site_name: 'vanraj723-s3-bucket'
+site_description: 'Main documentation for the vanraj723-s3-bucket'
+repo_url: https://github.com/vanrajboricha/vanraj723-s3-bucket
+edit_uri: edit/main/docs
+
+plugins:
+  - techdocs-core
+
+# For sidebar navigation on https://backstage.io/, see `microsite/sidebars.json`
+nav:
+  - Overview:
+      - Getting started: 'docs/index.md'
